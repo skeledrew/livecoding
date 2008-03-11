@@ -37,7 +37,7 @@ it and can be found in the same directory as the file 'LICENSE'.
 """
 
 __authors__ = "Michael Brannan, Richard Tew"
-__version__ = "1.02"
+__version__ = "1.0"
 
 import os, sys, types, random, weakref, StringIO, __builtin__
 import imp, new
@@ -68,14 +68,14 @@ class CodeManager:
         # Internal file change monitoring.
         self.internalFileMonitoring = detectChanges
         if detectChanges:
+            import filechanges
             # Grabbing a weakref to a method of this instance requires me to
             # hold onto the method as well.
-            pr = weakref.proxy(self)
+            pr = weakref.ref(self)
             cb = lambda *args, **kwargs: pr.ProcessChangedFile(*args, **kwargs)
             self.internalFileMonitor = self.GetChangeHandler(cb)
 
     def GetChangeHandler(self, cb):
-        import filechanges
         return filechanges.ChangeHandler(cb)
 
     # ------------------------------------------------------------------------
@@ -241,7 +241,6 @@ class CodeManager:
         if object_name not in all:
             all.append(object_name)
         if hasattr(newValue, "__module__"):
-            # print filePath, object_name, newValue.__module__, (name_space, module.__name__)
             newValue.__module__ = name_space or module.__name__
 
     # ------------------------------------------------------------------------
@@ -291,7 +290,7 @@ class CodeManager:
         if newCompiledFile.codeObject is None:
             return
         try:
-            newCompiledFile.Actualize()
+            newCompiledFile.Actualize(filePath)
         except ImportError, e:
             sys.stderr.write("ImportError in %s\n"%(filePath))
             lines = traceback.format_exception_only(ImportError, e)
@@ -357,13 +356,6 @@ class CodeManager:
                 oldLocals[objectName] = newObject
                 continue
 
-            # Classes which have been recompiled and therefore come from the
-            # changed file, can be identified by their uninitialised module
-            # attribute.  For a class to have a different value than this
-            # indicates that it was imported at the top of the file.
-            if newObject.__module__ != "__builtin__":
-                continue
-
             if oldObject:
                 toDelAttr = []
                 for k, oldV in oldObject.__dict__.iteritems():
@@ -373,7 +365,7 @@ class CodeManager:
                     if VERBOSE:
                         print "removing:",toDelAttr
                     for k in toDelAttr:
-                        del oldObject.__dict__[k]
+                        del oldObject[k]
 
             # Go over the entries in the newly (re)loaded file locals.
             for k, v in newObject.__dict__.iteritems():
@@ -411,7 +403,7 @@ class CodeManager:
                     continue
                 st.write("%s : %s\n" % (k, v))
             if st.len:
-                sys.stdout.write("change (newObject):\n")
+                sys.stdout.writeline("change (newObject):")
                 st.seek(0, 0)
                 sys.stdout.write(st.getvalue())
 
@@ -422,7 +414,7 @@ class CodeManager:
                         continue
                     st.write("%s : %s\n" % (k, v))
                 if st.len:
-                    sys.stdout.write("change (oldObject):\n")
+                    sys.stdout.writeline("change (oldObject):")
                     st.seek(0, 0)
                     sys.stdout.write(st.getvalue())
 
@@ -603,7 +595,7 @@ class ImportableDirectory:
                     errors += 1
 
         if errors > 0:
-            CodeManager.state = CCSTATE_FAILED
+            CodeCompiler.state = CCSTATE_FAILED
             sys.stderr.write("Compilation failed: %d errors\n"%(errors))
             return
 
@@ -619,24 +611,27 @@ class ImportableDirectory:
 
         errors = 0
         while len(candidates):
+            if errors > 100:
+                return
+
             for candidate in candidates:
                 compiledFile = self.compiledFiles[candidate]
                 if self.ProcessCompiledFile(path, candidate, compiledFile):
                     self.bootStrapOrder.append(candidate)
                     candidates.remove(candidate)
-                else:
-                    errors += 1
-            if errors > 100:
-                raise RuntimeError("Failed to find compilation dependencies", path, candidates)
 
     def ProcessCompiledFile(self, path, filePath, compiledFile):
         try:
-            compiledFile.Actualize()
+            compiledFile.Actualize(path)
         except Exception, e:
+            errors += 1
+
             sys.stderr.write("%s in %s\n"%(e.__class__.__name__, filePath))
             lines = traceback.format_exception_only(e.__class__, e)
             for line in lines:
                 sys.stderr.write(line.replace('File "<string>"', 'File %s' % compiledFile.filePath))
+
+            sys.exc_clear()
             return False
 
         if VERBOSE:
@@ -685,7 +680,8 @@ class CompiledFile:
             self.codeObject = None
             # self.timeStamp = None
 
-    def Actualize(self):
+    def Actualize(self, path):
+        stripIdx = path.rfind("\\")
         # Should we clear self.locals?  Need to think about this.
         eval(self.codeObject, self.locals)
 
@@ -701,15 +697,7 @@ class CompiledFile:
                 if hasattr(v, "__module__"):
                     # New classes and new functions respectively.  These will get
                     # a module set when these exports are put in place.
-                    if v.__module__ is None:
-                        exports[k] = v
-                    elif v.__module__ == "__builtin__":
-                        # A special case.  If a module imports from the 'types'
-                        # module, then we will not be able to identify what
-                        # was imported as not being created locally.  We need
-                        # to check if this is the case and exclude these entries.
-                        if getattr(types, k, None) is v:
-                            continue
+                    if v.__module__ is None or v.__module__ == "__builtin__":
                         exports[k] = v
                 #else:
                 #    print "-- UNKNOWN", type(v), k, v, v.__module__, v.__dict__.keys()

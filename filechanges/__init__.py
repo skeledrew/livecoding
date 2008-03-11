@@ -35,16 +35,9 @@ class ChangeHandler:
             self.module.Prepare(self)
 
     def AddDirectory(self, path):
+        self.directories.append(path)
         if self.module:
-            self.directories.append(path)
             self.module.Prepare(self)
-        elif self.thread:
-            # We only want to add the new directory when we can be sure it
-            # won't interfere with the change detecting thread.
-            self.thread.lock.acquire()
-            self.directories.append(path)
-            self.thread.resetEvent.set()
-            self.thread.lock.release()
 
     def RemoveDirectory(self, path):
         self.directories.remove(path)
@@ -91,25 +84,15 @@ class ChangeThread(threading.Thread):
 
         self.handler = handler
         self.delay = delay
-        self.resetEvent = threading.Event()
-        self.lock = threading.Lock()
         self.start()
 
     def run(self):
         module = GetFileChangeModule()
         module.Prepare(self.handler)
-        time.sleep(self.delay)
 
         try:
             while True:
-                self.lock.acquire()
-                if self.resetEvent.isSet():
-                    self.resetEvent.clear()
-                    module.Prepare(self.handler)
-                else:
-                    module.Check(self.handler)
-                self.lock.release()
-
+                module.Check(self.handler)
                 time.sleep(self.delay)
         except ReferenceError:
             pass
